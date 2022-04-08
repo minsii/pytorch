@@ -36,6 +36,15 @@ jobs:
             setuptools \
             typing_extensions
 
-      - name: Do stuff
+      - name: Install Buck
         run: |
-          clang --version
+          wget https://github.com/facebook/buck/releases/download/v2021.01.12.01/buck.2021.01.12.01_all.deb
+          sudo sudo apt remove openjdk*
+          sudo apt install ./buck.2021.01.12.01_all.deb
+          java --version
+
+      - name: Run Buck Hello World
+        run: |
+          touch .buckconfig
+          buck build :hello
+          buck run :hello
