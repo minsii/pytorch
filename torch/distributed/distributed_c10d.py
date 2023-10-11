@@ -57,7 +57,7 @@ __all__ = [
     'ProcessGroup', 'ReduceOp', 'ReduceOptions', 'ReduceScatterOptions',
     'ScatterOptions', 'Store', 'DebugLevel', 'get_debug_level', 'Work',
     'default_pg_timeout', 'get_group_rank', 'get_global_rank', 'get_process_group_ranks',
-    'reduce_op', 'all_gather_into_tensor', 'reduce_scatter_tensor',
+    'reduce_op', 'all_gather_into_tensor', 'reduce_scatter_tensor', 'register_tensors'
 ]
 
 _MPI_AVAILABLE = True
@@ -1508,6 +1508,34 @@ def get_world_size(group: Optional[ProcessGroup] = None) -> int:
 
     return _get_group_size(group)
 
+def register_tensors(tensor_list: List[torch.Tensor], group: Optional[ProcessGroup] = None, is_register: Optional[bool] = True) -> None:
+    """
+    Registers all tensors in a list of tensors to allow for performance optimizations
+
+    Args:
+        tensor_list (List[Tensor]): List of tensors to be registered
+        group: (ProcessGroup, optional): The process group to work on. If None, use defualt group
+        is_register (bool, optional): If True, register tensors; otherwise, deregister.
+    Returns:
+        None
+
+    .. note:: Currently only supported by NCCL PG.
+
+    """
+    if _rank_not_in_group(group):
+        _warn_not_in_group("register_tensors")
+        return
+
+    _check_tensor_list(tensor_list, "tensor_list")
+    _ensure_all_tensors_same_dtype(tensor_list)
+
+    if group is None:
+        group = _get_default_group()
+
+    if is_register:
+        group.register_tensors(tensor_list)
+    else:
+        group.deregister_tensors(tensor_list)
 
 def isend(tensor: torch.Tensor, dst: int, group: Optional[ProcessGroup] = None, tag: int = 0) -> Work:
     """
