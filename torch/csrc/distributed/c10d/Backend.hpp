@@ -365,6 +365,20 @@ class TORCH_API Backend : public torch::CustomClassHolder {
     return pg_name_;
   }
 
+  virtual void registerTensors(std::vector<at::Tensor>& /* tensors */) {
+    TORCH_CHECK(
+        false,
+        c10::str(
+            "Backend ", getBackendName(), " does not support registerTensors"));
+  }
+
+  virtual void deregisterTensors(std::vector<at::Tensor>& /* tensors */) {
+    TORCH_CHECK(
+        false,
+        c10::str(
+            "Backend ", getBackendName(), " does not support deregisterTensors"));
+  }
+
  protected:
   // Implementations of this interface need to call this to setup
   // appropriate logging etc.
