@@ -1500,6 +1500,72 @@ void ProcessGroupNCCL::destroyNCCLComms(const std::string& devNCCLCommMapKey) {
   usedDeviceIdxs_.clear();
 }
 
+static std::mutex registerNcclCommsMutex;
+static std::vector<std::shared_ptr<NCCLComm>> registerNcclComms;
+static std::shared_ptr<NCCLComm> onetimeNcclComm;
+
+void ProcessGroupOneTimeNcclRegisterBuffer(void* ptr, size_t size) {
+#ifdef NCCL_HAS_COMM_REGISTER
+  if (onetimeNcclComm) {
+    C10D_NCCL_CHECK(
+        onetimeNcclComm->registerTensor(ptr, size),
+        "Failed to register buffer for NCCL communicator.");
+    LOG(INFO) << "ProcessGroupOneTimeNcclRegisterBuffer ptr=" << ptr
+              << " size=" << size << " on comm " << onetimeNcclComm << std::endl;
+  } else {
+    LOG(INFO) << "onetimeNcclComms is not set, skip registration for ptr="
+              << ptr << " size=" << size;
+  }
+#else
+  LOG(INFO)
+      << "ProcessGroupOneTimeNcclRegisterBuffer requires NCCL lib version >= 2.19.0; skip";
+#endif
+}
+
+void ProcessGroupNcclRegisterBuffer(void* ptr, size_t size) {
+#ifdef NCCL_HAS_COMM_REGISTER
+  std::lock_guard<std::mutex> lock(registerNcclCommsMutex);
+  // FIXME: need check device
+  for (const auto i : c10::irange(registerNcclComms.size())) {
+    auto& ncclComm = registerNcclComms[i];
+    C10D_NCCL_CHECK(
+        ncclComm->registerTensor(ptr, size),
+        "Failed to register buffer for NCCL communicator.");
+    LOG(INFO) << "ProcessGroupNcclRegisterBuffer ptr=" << ptr
+              << " size=" << size << " on comm " << ncclComm << std::endl;
+  }
+  if (registerNcclComms.empty()) {
+    LOG(INFO) << "registerNcclComms is empty, skip registration for ptr=" << ptr
+              << " size=" << size << std::endl;
+  }
+#else
+  LOG(INFO)
+      << "ProcessGroupNcclRegisterBuffer requires NCCL lib version >= 2.19.0; skip";
+#endif
+}
+
+void ProcessGroupNcclDeregisterBuffer(void* ptr) {
+#ifdef NCCL_HAS_COMM_REGISTER
+  std::lock_guard<std::mutex> lock(registerNcclCommsMutex);
+  // FIXME: need check device
+  for (const auto i : c10::irange(registerNcclComms.size())) {
+    auto& ncclComm = registerNcclComms[i];
+    C10D_NCCL_CHECK(
+        ncclComm->deregisterTensor(ptr),
+        "Failed to de-register buffer for NCCL communicator.");
+    LOG(INFO) << "ProcessGroupNcclDeregisterBuffer ptr=" << ptr << " on comm "
+              << ncclComm;
+  }
+  if (registerNcclComms.empty()) {
+     LOG(INFO) << "registerNcclComms is empty, skip de-registration for ptr="
+              << ptr << std::endl;
+  }
+#else
+  LOG(INFO)
+      << "ProcessGroupNcclRegisterBuffer requires NCCL lib version >= 2.19.0; skip";
+#endif
+}
+
 std::vector<std::shared_ptr<NCCLComm>>& ProcessGroupNCCL::getNCCLComm(
     const std::string& devicesKey,
     const std::vector<at::Device>& devices,
@@ -1577,6 +1643,8 @@ std::vector<std::shared_ptr<NCCLComm>>& ProcessGroupNCCL::getNCCLComm(
   // [Note 1] Create the NCCL communicators for each GPU
   C10D_NCCL_CHECK(ncclGroupStart(), c10::nullopt);
 
+  auto use_register_hook = parseEnvVarIntDefault("NCCL_USE_PG_CUDA_REG_HOOK", 1);
+
   for (const auto i : c10::irange(devices.size())) {
     // GPU world size and GPU rank
     int numRanks, rank;
@@ -1605,9 +1673,25 @@ std::vector<std::shared_ptr<NCCLComm>>& ProcessGroupNCCL::getNCCLComm(
     ncclComms[i] = NCCLComm::create(numRanks, rank, ncclID);
 #endif
 
+    if (use_register_hook == 1) {
+      std::lock_guard<std::mutex> lock(registerNcclCommsMutex);
+      registerNcclComms.push_back(ncclComms[i]);
+      LOG(INFO) << "registerNcclComms.push_back(comm=" << ncclComms[i] << ")" << std::endl;
+    }
+
     // Creates the NCCL streams
     streamVal.push_back(
         at::cuda::getStreamFromPool(options_->is_high_priority_stream));
+  }
+
+  // It allows cache allocator to trigger the hook for all cache blocks
+  // newly allocated after creating this ncclComm.
+  // We use backendRegisterAllBlocks to one-time register all existing blocks to the new ncclComm
+  if (use_register_hook == 1) {
+      c10::cuda::CUDACachingAllocator::registerBackendPostAllocHook(
+          &ProcessGroupNcclRegisterBuffer);
+      c10::cuda::CUDACachingAllocator::registerBackendPreFreeHook(
+          &ProcessGroupNcclDeregisterBuffer);
   }
 
   {
@@ -1625,6 +1709,16 @@ std::vector<std::shared_ptr<NCCLComm>>& ProcessGroupNCCL::getNCCLComm(
     C10D_NCCL_CHECK_TIMEOUT_GROUPEND(ncclGroupEnd(), ncclComms, c10::nullopt);
   }
 #endif
+
+  // FIXME: properly register with all new ncclComms
+  if (use_register_hook == 1) {
+      for (const auto i : c10::irange(devices.size())) {
+        onetimeNcclComm = ncclComms[i];
+        c10::cuda::CUDACachingAllocator::backendRegisterAllBlocks(devices[i].index(), &ProcessGroupOneTimeNcclRegisterBuffer);
+        LOG(INFO) << "Registering existing cache blocks to new ncclComm=" << ncclComms[i] << ", deviceIndex=" << i << std::endl;
+      }
+      onetimeNcclComm = nullptr;
+  }
 
   // At this point NCCL should have been initialized, hence we can accurately
   // get the env value even if NCCL sets it by reading from nccl.conf file
