@@ -1526,8 +1526,8 @@ def register_tensors(tensor_list: List[torch.Tensor], group: Optional[ProcessGro
         _warn_not_in_group("register_tensors")
         return
 
-    _check_tensor_list(tensor_list, "tensor_list")
-    _ensure_all_tensors_same_dtype(tensor_list)
+    #_check_tensor_list(tensor_list, "tensor_list")
+    #_ensure_all_tensors_same_dtype(tensor_list)
 
     if group is None:
         group = _get_default_group()
