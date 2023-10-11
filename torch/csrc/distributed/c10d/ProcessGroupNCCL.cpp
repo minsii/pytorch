@@ -3362,6 +3362,57 @@ bool ProcessGroupNCCL::isUCCAvailable() const {
 #endif
 }
 
+void ProcessGroupNCCL::registerTensors(std::vector<at::Tensor>& tensors) {
+#ifdef NCCL_HAS_COMM_REGISTER
+  const auto devices = getDeviceList(tensors);
+  const bool inputs_same_dev = (devices.size() == 1);
+  const auto key = getKeyFromDevices(devices);
+  // TODO: get optype
+  auto& ncclComms = getNCCLComm(key, devices, OpType::ALLTOALL_BASE);
+
+  at::cuda::OptionalCUDAGuard gpuGuard;
+
+  for (const auto i : c10::irange(tensors.size())) {
+    if (!inputs_same_dev || (inputs_same_dev && i == 0)) {
+      gpuGuard.set_index(devices[i].index());
+    }
+    decltype(i) stream_comm_i = (inputs_same_dev ? 0 : i);
+    auto& ncclComm = ncclComms[stream_comm_i];
+    C10D_NCCL_CHECK(ncclComm->registerTensor(tensors[i].data_ptr(), tensors[i].numel() * tensors[i].element_size()), "Failed to register tensors for NCCL communicator.");
+  }
+#else
+  TORCH_CHECK(
+      false,
+      "ProcessGroupNCCL only supports registerTensor for NCCL lib version >= 2.19.0");
+#endif
+}
+
+void ProcessGroupNCCL::deregisterTensors(
+    std::vector<at::Tensor>& tensors) {
+#ifdef NCCL_HAS_COMM_REGISTER
+  const auto devices = getDeviceList(tensors);
+  const bool inputs_same_dev = (devices.size() == 1);
+  const auto key = getKeyFromDevices(devices);
+  // TODO: get optype
+  auto& ncclComms = getNCCLComm(key, devices, OpType::ALLTOALL_BASE);
+
+  at::cuda::OptionalCUDAGuard gpuGuard;
+
+  for (const auto i : c10::irange(tensors.size())) {
+    if (!inputs_same_dev || (inputs_same_dev && i == 0)) {
+      gpuGuard.set_index(devices[i].index());
+    }
+    decltype(i) stream_comm_i = (inputs_same_dev ? 0 : i);
+    auto& ncclComm = ncclComms[stream_comm_i];
+    C10D_NCCL_CHECK(ncclComm->deregisterTensor(tensors[i].data_ptr()), "Failed to de-register tensors for NCCL communicator.");
+  }
+#else
+  TORCH_CHECK(
+      false,
+      "ProcessGroupNCCL only supports deregisterTensor for NCCL lib version >= 2.19.0");
+#endif
+}
+
 } // namespace c10d
 
 #endif // USE_C10D_NCCL

@@ -531,6 +531,12 @@ class TORCH_API ProcessGroupNCCL : public Backend {
       int rank,
       OpType opType);
 
+  // register tensor to be reused by NCCL
+  virtual void registerTensors(std::vector<at::Tensor>& tensors) override;
+
+  // de-register tensor to be reused by NCCL
+  virtual void deregisterTensors(std::vector<at::Tensor>& tensors) override;
+
  private:
   // Helper that encapsulates work shared across all collective communication
   // primitives.  The callbacks have the following signatures:

@@ -601,6 +601,30 @@ class TORCH_API ProcessGroup : public torch::CustomClassHolder {
         opts.timeout.count());
   }
 
+  virtual void registerTensors(std::vector<at::Tensor>& tensors) {
+    static auto op =
+        c10::Dispatcher::singleton()
+            .findSchemaOrThrow("c10d::register_tensors_", "")
+            .typed<void(
+                const at::TensorList&,
+                const c10::intrusive_ptr<::c10d::ProcessGroup>&)>();
+    op.call(
+        tensors,
+        c10::intrusive_ptr<ProcessGroup>::unsafe_reclaim_from_nonowning(this));
+  }
+
+  virtual void deregisterTensors(std::vector<at::Tensor>& tensors) {
+    static auto op =
+        c10::Dispatcher::singleton()
+            .findSchemaOrThrow("c10d::deregister_tensors_", "")
+            .typed<void(
+                const at::TensorList&,
+                const c10::intrusive_ptr<::c10d::ProcessGroup>&)>();
+    op.call(
+        tensors,
+        c10::intrusive_ptr<ProcessGroup>::unsafe_reclaim_from_nonowning(this));
+  }
+
   c10::intrusive_ptr<Options> getOptions() {
     return options_;
   }

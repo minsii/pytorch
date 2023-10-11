@@ -56,6 +56,8 @@ TORCH_LIBRARY(c10d, m) {
       "recv_(Tensor[] tensors, __torch__.torch.classes.c10d.ProcessGroup process_group, int src, int tag) -> __torch__.torch.classes.c10d.Work");
   m.def(
       "recv_any_source_(Tensor[] tensors, __torch__.torch.classes.c10d.ProcessGroup process_group, int tag) -> __torch__.torch.classes.c10d.Work");
+  m.def("register_tensors_(Tensor[] tensors, __torch__.torch.classes.c10d.ProcessGroup process_group) -> ()");
+  m.def("deregister_tensors_(Tensor[] tensors, __torch__.torch.classes.c10d.ProcessGroup process_group) -> ()");
 }
 } // namespace
 
@@ -472,6 +474,21 @@ allreduce_sparse_cuda_(
   return std::tuple<std::vector<at::Tensor>, c10::intrusive_ptr<Work>>(
       std::move(tensor_vec), work);
 }
+
+void register_tensors_cuda_(
+    const at::TensorList& tensors,
+    const c10::intrusive_ptr<ProcessGroup>& process_group) {
+  auto tensor_vec = tensors.vec();
+  process_group->getBackend(c10::DeviceType::CUDA)->registerTensors(tensor_vec);
+}
+
+void deregister_tensors_cuda_(
+    const at::TensorList& tensors,
+    const c10::intrusive_ptr<ProcessGroup>& process_group) {
+  auto tensor_vec = tensors.vec();
+  process_group->getBackend(c10::DeviceType::CUDA)->deregisterTensors(tensor_vec);
+}
+
 } // namespace
 
 // register functions to dispatcher
@@ -517,6 +534,11 @@ REGISTER_C10D_OP(barrier)
 
 TORCH_LIBRARY_IMPL(c10d, CPU, m) {
   m.impl("monitored_barrier_", monitored_barrier_CPU);
+}
+
+TORCH_LIBRARY_IMPL(c10d, CUDA, m) {
+  m.impl("register_tensors_", register_tensors_cuda_);
+  m.impl("deregister_tensors_", deregister_tensors_cuda_);
 }
 
 // TODO: The SparseCPU/SparseCUDA dispatched methods are only used to support

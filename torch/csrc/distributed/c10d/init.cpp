@@ -1770,7 +1770,35 @@ Arguments:
           .def_property_readonly(
               "group_name",
               &::c10d::ProcessGroup::getGroupName,
-              "(Gets this process group name. It's cluster unique)");
+              "(Gets this process group name. It's cluster unique)")
+          .def(
+              "register_tensors",
+              &::c10d::ProcessGroup::registerTensors,
+              py::arg("tensors"),
+              py::call_guard<py::gil_scoped_release>())
+          .def(
+              "register_tensors",
+              [](const c10::intrusive_ptr<::c10d::ProcessGroup>& self,
+                 const at::Tensor& tensor) {
+                std::vector<at::Tensor> tensors = {tensor};
+                self->registerTensors(tensors);
+              },
+              py::arg("tensors"),
+              py::call_guard<py::gil_scoped_release>())
+          .def(
+              "deregister_tensors",
+              &::c10d::ProcessGroup::deregisterTensors,
+              py::arg("tensors"),
+              py::call_guard<py::gil_scoped_release>())
+          .def(
+              "deregister_tensors",
+              [](const c10::intrusive_ptr<::c10d::ProcessGroup>& self,
+                 const at::Tensor& tensor) {
+                std::vector<at::Tensor> tensors = {tensor};
+                self->deregisterTensors(tensors);
+              },
+              py::arg("tensors"),
+              py::call_guard<py::gil_scoped_release>());
 
   py::enum_<::c10d::ProcessGroup::BackendType>(processGroup, "BackendType")
       .value("UNDEFINED", ::c10d::ProcessGroup::BackendType::UNDEFINED)
@@ -2095,6 +2123,16 @@ options :class:`~torch.distributed.ProcessGroupNCCL.Options`).
               },
               py::arg("timeout") = ::c10d::kUnsetTimeout,
               py::arg("wait_all_ranks") = false,
+              py::call_guard<py::gil_scoped_release>())
+          .def(
+              "register_tensors",
+              &::c10d::Backend::registerTensors,
+              py::arg("tensors"),
+              py::call_guard<py::gil_scoped_release>())
+          .def(
+              "deregister_tensors",
+              &::c10d::Backend::deregisterTensors,
+              py::arg("tensors"),
               py::call_guard<py::gil_scoped_release>())
           .def(
               "_get_backend_name",
