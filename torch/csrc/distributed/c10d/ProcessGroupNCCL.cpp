@@ -881,6 +881,9 @@ ProcessGroupNCCL::ProcessGroupNCCL(
       parseEnvVarIntDefault("TORCH_NCCL_TRACE_BUFFER_SIZE", 0) > 0);
 #endif
   avoidRecordStreams_ = parseEnvVarFlag(TORCH_NCCL_AVOID_RECORD_STREAMS);
+#ifdef NCCL_HAS_COMM_REGISTER
+  useTensorRegisterAllocatorHook_ = parseEnvVarFlag(NCCL_USE_TENSOR_REGISTER_ALLOCATOR_HOOK);
+#endif
 
   if (blockingWait_) {
     if (asyncErrorHandling_ != NoHandling || desyncDebug_) {
@@ -932,6 +935,9 @@ ProcessGroupNCCL::ProcessGroupNCCL(
             << options_->is_high_priority_stream
             << ", TORCH_DISTRIBUTED_DEBUG: "
             << std::string(torch_distributed_debug)
+#ifdef NCCL_HAS_COMM_REGISTER
+            << ", NCCL_USE_TENSOR_REGISTER_ALLOCATOR_HOOK: " << useTensorRegisterAllocatorHook_
+#endif
             << ", NCCL_DEBUG: " << std::string(nccl_debug)
             << ", ID=" << this->getID();
 
@@ -1505,7 +1511,6 @@ static std::vector<std::shared_ptr<NCCLComm>> registerNcclComms;
 static std::shared_ptr<NCCLComm> onetimeNcclComm;
 
 void ProcessGroupOneTimeNcclRegisterBuffer(void* ptr, size_t size) {
-#ifdef NCCL_HAS_COMM_REGISTER
   if (onetimeNcclComm) {
     C10D_NCCL_CHECK(
         onetimeNcclComm->registerTensor(ptr, size),
@@ -1516,14 +1521,9 @@ void ProcessGroupOneTimeNcclRegisterBuffer(void* ptr, size_t size) {
     LOG(INFO) << "onetimeNcclComms is not set, skip registration for ptr="
               << ptr << " size=" << size;
   }
-#else
-  LOG(INFO)
-      << "ProcessGroupOneTimeNcclRegisterBuffer requires NCCL lib version >= 2.19.0; skip";
-#endif
 }
 
 void ProcessGroupNcclRegisterBuffer(void* ptr, size_t size) {
-#ifdef NCCL_HAS_COMM_REGISTER
   std::lock_guard<std::mutex> lock(registerNcclCommsMutex);
   // FIXME: need check device
   for (const auto i : c10::irange(registerNcclComms.size())) {
@@ -1538,14 +1538,9 @@ void ProcessGroupNcclRegisterBuffer(void* ptr, size_t size) {
     LOG(INFO) << "registerNcclComms is empty, skip registration for ptr=" << ptr
               << " size=" << size << std::endl;
   }
-#else
-  LOG(INFO)
-      << "ProcessGroupNcclRegisterBuffer requires NCCL lib version >= 2.19.0; skip";
-#endif
 }
 
 void ProcessGroupNcclDeregisterBuffer(void* ptr) {
-#ifdef NCCL_HAS_COMM_REGISTER
   std::lock_guard<std::mutex> lock(registerNcclCommsMutex);
   // FIXME: need check device
   for (const auto i : c10::irange(registerNcclComms.size())) {
@@ -1560,10 +1555,6 @@ void ProcessGroupNcclDeregisterBuffer(void* ptr) {
      LOG(INFO) << "registerNcclComms is empty, skip de-registration for ptr="
               << ptr << std::endl;
   }
-#else
-  LOG(INFO)
-      << "ProcessGroupNcclRegisterBuffer requires NCCL lib version >= 2.19.0; skip";
-#endif
 }
 
 std::vector<std::shared_ptr<NCCLComm>>& ProcessGroupNCCL::getNCCLComm(
@@ -1643,8 +1634,6 @@ std::vector<std::shared_ptr<NCCLComm>>& ProcessGroupNCCL::getNCCLComm(
   // [Note 1] Create the NCCL communicators for each GPU
   C10D_NCCL_CHECK(ncclGroupStart(), c10::nullopt);
 
-  auto use_register_hook = parseEnvVarIntDefault("NCCL_USE_PG_CUDA_REG_HOOK", 1);
-
   for (const auto i : c10::irange(devices.size())) {
     // GPU world size and GPU rank
     int numRanks, rank;
@@ -1673,7 +1662,7 @@ std::vector<std::shared_ptr<NCCLComm>>& ProcessGroupNCCL::getNCCLComm(
     ncclComms[i] = NCCLComm::create(numRanks, rank, ncclID);
 #endif
 
-    if (use_register_hook == 1) {
+    if (useTensorRegisterAllocatorHook_) {
       std::lock_guard<std::mutex> lock(registerNcclCommsMutex);
       registerNcclComms.push_back(ncclComms[i]);
       LOG(INFO) << "registerNcclComms.push_back(comm=" << ncclComms[i] << ")" << std::endl;
@@ -1687,7 +1676,7 @@ std::vector<std::shared_ptr<NCCLComm>>& ProcessGroupNCCL::getNCCLComm(
   // It allows cache allocator to trigger the hook for all cache blocks
   // newly allocated after creating this ncclComm.
   // We use backendRegisterAllBlocks to one-time register all existing blocks to the new ncclComm
-  if (use_register_hook == 1) {
+  if (useTensorRegisterAllocatorHook_) {
       c10::cuda::CUDACachingAllocator::registerBackendPostAllocHook(
           &ProcessGroupNcclRegisterBuffer);
       c10::cuda::CUDACachingAllocator::registerBackendPreFreeHook(
@@ -1710,8 +1699,7 @@ std::vector<std::shared_ptr<NCCLComm>>& ProcessGroupNCCL::getNCCLComm(
   }
 #endif
 
-  // FIXME: properly register with all new ncclComms
-  if (use_register_hook == 1) {
+  if (useTensorRegisterAllocatorHook_) {
       for (const auto i : c10::irange(devices.size())) {
         onetimeNcclComm = ncclComms[i];
         c10::cuda::CUDACachingAllocator::backendRegisterAllBlocks(devices[i].index(), &ProcessGroupOneTimeNcclRegisterBuffer);
