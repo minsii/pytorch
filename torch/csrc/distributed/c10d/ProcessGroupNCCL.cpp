@@ -13,8 +13,8 @@
 #include <unordered_set>
 #include <utility>
 
-#include <time.h>
 #include <signal.h>
+#include <time.h>
 
 #include <ATen/cuda/CUDAContext.h>
 #include <ATen/cuda/CUDAGraph.h>
@@ -878,7 +878,8 @@ ProcessGroupNCCL::ProcessGroupNCCL(
       parseEnvVarIntDefault(NCCL_ASYNC_ERROR_HANDLING, 3 /*SkipCleanUp*/));
   desyncDebug_ = parseEnvVarFlag(NCCL_DESYNC_DEBUG) ||
       (dist_debug_level_ >= DebugLevel::Detail);
-  watch_timeout_secs_ = parseEnvVarIntDefault(NCCL_PG_WATCHDOG_TIMEOUT, 10 * 60);
+  watch_timeout_secs_ =
+      parseEnvVarIntDefault(NCCL_PG_WATCHDOG_TIMEOUT, 10 * 60);
 #ifdef ENABLE_NCCL_ERROR_CHECKING
   enableTiming_.store(
       parseEnvVarFlag(NCCL_ENABLE_TIMING) || desyncDebug_ ||
@@ -1194,9 +1195,7 @@ void ProcessGroupNCCL::ncclCommWatchdog() {
     if (rv < 0) {
       // Append error message reported from workCleanupLoop
       const auto exitMsg = c10::str(
-          "[Rank ",
-          rank_,
-          "] NCCL watchdog thread timer creation errors!");
+          "[Rank ", rank_, "] NCCL watchdog thread timer creation errors!");
       LOG(ERROR) << exitMsg;
     }
 
@@ -1270,12 +1269,11 @@ void ProcessGroupNCCL::workCleanupLoop() {
     struct itimerspec timerspec;
     std::memset(&timerspec, 0, sizeof(timerspec));
     timerspec.it_value.tv_sec = watch_timeout_secs_;
-    int rv = ::timer_settime(timerId_, /*flags=*/0, &timerspec, /*old_value=*/nullptr);
+    int rv = ::timer_settime(
+        timerId_, /*flags=*/0, &timerspec, /*old_value=*/nullptr);
     if (rv < 0) {
-      const auto exitMsg = c10::str(
-            "[Rank ",
-            rank_,
-            "] NCCL watchdog timer set error");
+      const auto exitMsg =
+          c10::str("[Rank ", rank_, "] NCCL watchdog timer set error");
       LOG(ERROR) << exitMsg;
     }
 
