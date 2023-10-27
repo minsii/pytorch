@@ -60,6 +60,13 @@
 #define NCCL_HAS_COMM_CTA_CGA
 #endif
 
+// TODO: need to update once we know the exact NCCL version that has new APIs
+#if defined(NCCL_REGISTRATION_SUPPORTED) || ((defined(NCCL_MAJOR) && (NCCL_MAJOR == 2) && defined(NCCL_MINOR) && (NCCL_MINOR >= 19)))
+#define NCCL_HAS_COMM_REGISTER
+#elif defined(NCCL_MAJOR) && (NCCL_MAJOR >= 3)
+#define NCCL_HAS_COMM_REGISTER
+#endif
+
 // Macro to throw on a non-successful NCCL return value.
 #define C10D_NCCL_CHECK(cmd, failureReason)                                   \
   do {                                                                        \
@@ -306,6 +313,42 @@ class NCCLComm {
 #endif
   }
 
+
+  ncclResult_t registerTensor(void* buf, size_t size) {
+    std::unique_lock<std::mutex> lock(mutex_);
+#ifdef NCCL_HAS_COMM_REGISTER
+    void* handle;
+    auto res = ncclCommRegister(
+        ncclComm_,
+        buf,
+        size,
+        &handle);
+    if (res == ncclSuccess) {
+      tensorHandles_[buf] = handle;
+    }
+    return res;
+#else
+    return ncclInvalidUsage;
+#endif
+  }
+
+  ncclResult_t deregisterTensor(void* buf) {
+    std::unique_lock<std::mutex> lock(mutex_);
+#ifdef NCCL_HAS_COMM_REGISTER
+    auto res = ncclSuccess;
+    if (tensorHandles_.count(buf) > 0) {
+      void* handle = tensorHandles_[buf];
+      res = ncclCommDeregister(
+          ncclComm_,
+          handle);
+      tensorHandles_.erase(buf);
+    }
+    return res;
+#else
+    return ncclInvalidUsage;
+#endif
+  }
+
  protected:
   ncclComm_t ncclComm_;
   // Unique nccl_id for this communicator.
@@ -318,6 +361,10 @@ class NCCLComm {
   // Optional reason for communicator failure, provided by ProcessGroupNCCL for
   // better error messaging.
   c10::optional<std::string> commFailureReason_;
+#ifdef NCCL_HAS_COMM_REGISTER
+  // Stores handlers for tensors registered by NCCL
+  std::unordered_map<void*, void*> tensorHandles_;
+#endif
 };
 
 // Helper that automatically cleans up premul sums.

@@ -98,7 +98,7 @@ struct DeviceStats {
   Stat oversize_segments;
 
   // SIZE: maximum block size that is allowed to be split.
-  size_t max_split_size = 0;
+  int64_t max_split_size = 0;
 };
 
 typedef std::shared_ptr<GatheredContext> (*CreateContextFn)(void);
@@ -275,6 +275,28 @@ class CUDAAllocator : public Allocator {
       int device,
       std::shared_ptr<AllocatorState> pps) = 0;
   virtual std::string name() = 0;
+  virtual void registerBackendPostAllocHook(
+      void (*func)(void* ptr, size_t size)) {
+    TORCH_CHECK(
+        false,
+        name(),
+        " does not yet support registerBackendPostAllocHook. "
+        "If you need it, please file an issue describing your use case.");
+  }
+  virtual void registerBackendPreFreeHook(void (*func)(void* ptr)) {
+    TORCH_CHECK(
+        false,
+        name(),
+        " does not yet support registerBackendPreFreeHook. "
+        "If you need it, please file an issue describing your use case.");
+  }
+  virtual void backendRegisterAllBlocks(int device, void (*func)(void* ptr, size_t size)) {
+    TORCH_CHECK(
+        false,
+        name(),
+        " does not yet support backendRegisterAllBlocks. "
+        "If you need it, please file an issue describing your use case.");
+  }
 };
 
 // Allocator object, statically initialized
@@ -313,12 +335,24 @@ inline void emptyCache() {
   return get()->emptyCache();
 }
 
+inline void backendRegisterAllBlocks(int device, void (*func)(void* ptr, size_t size)) {
+  return get()->backendRegisterAllBlocks(device, func);
+}
+
 inline void cacheInfo(int dev_id, size_t* largestBlock) {
   return get()->cacheInfo(dev_id, largestBlock);
 }
 
 inline void* getBaseAllocation(void* ptr, size_t* size) {
   return get()->getBaseAllocation(ptr, size);
+}
+
+inline void registerBackendPostAllocHook(void (*func) (void *ptr, size_t size)) {
+  return get()->registerBackendPostAllocHook(func);
+}
+
+inline void registerBackendPreFreeHook(void (*func) (void *ptr)) {
+  return get()->registerBackendPreFreeHook(func);
 }
 
 inline void recordStream(const DataPtr& dataPtr, CUDAStream stream) {
