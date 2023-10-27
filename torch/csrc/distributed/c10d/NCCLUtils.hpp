@@ -11,6 +11,7 @@
 #include <c10/util/Exception.h>
 #include <c10/util/Optional.h>
 #include <nccl.h>
+#include <c10/util/Logging.h>
 
 #if defined(NCCL_MAJOR) && (NCCL_MAJOR == 2) && defined(NCCL_MINOR) && \
     (NCCL_MINOR >= 14)
@@ -58,6 +59,14 @@
 #define NCCL_HAS_COMM_CTA_CGA
 #elif defined(NCCL_MAJOR) && (NCCL_MAJOR >= 3)
 #define NCCL_HAS_COMM_CTA_CGA
+#endif
+
+#if defined(NCCL_REGISTRATION_SUPPORTED) ||                              \
+    ((defined(NCCL_MAJOR) && (NCCL_MAJOR == 2) && defined(NCCL_MINOR) && \
+      (NCCL_MINOR >= 19)))
+#define NCCL_HAS_COMM_REGISTER
+#elif defined(NCCL_MAJOR) && (NCCL_MAJOR >= 3)
+#define NCCL_HAS_COMM_REGISTER
 #endif
 
 // Macro to throw on a non-successful NCCL return value.
@@ -264,6 +273,15 @@ class NCCLComm {
       return;
     }
 
+#ifdef NCCL_HAS_COMM_REGISTER
+    // Deregister all registered segments before aborting.
+    for (auto& it : registSegmentHandles_) {
+      void* handle = it.second;
+      C10D_NCCL_CHECK(::ncclCommDeregister(ncclComm_, handle), c10::nullopt);
+    }
+    registSegmentHandles_.clear();
+#endif
+
     // Set true failure reason if provided by ProcessGroupNCCL (e.g. work
     // timeout)
     commFailureReason_ = commFailureReason;
@@ -306,6 +324,49 @@ class NCCLComm {
 #endif
   }
 
+  ncclResult_t registerSegment(void* ptr, size_t size) {
+    std::unique_lock<std::mutex> lock(mutex_);
+#ifdef NCCL_HAS_COMM_REGISTER
+    void* handle;
+    // We register only segments from cache allocator
+    // which are guaranteed to be with disjoint addr ranges. Thus, a ptr always
+    // maps to a unique handle.
+    C10D_NCCL_CHECK(
+        ncclCommRegister(ncclComm_, ptr, size, &handle),
+        c10::str(
+            "Failed to register segment [ptr=",
+            ptr,
+            ", size=",
+            size,
+            "] on ncclComm_ ",
+            ncclComm_));
+    registSegmentHandles_[ptr] = handle;
+    return ncclSuccess;
+#else
+    return ncclInvalidUsage;
+#endif
+  }
+
+  ncclResult_t deregisterSegment(void* ptr) {
+    std::unique_lock<std::mutex> lock(mutex_);
+#ifdef NCCL_HAS_COMM_REGISTER
+    if (registSegmentHandles_.contains(ptr)) {
+      void* handle = registSegmentHandles_[ptr];
+      C10D_NCCL_CHECK(
+          ncclCommDeregister(ncclComm_, handle),
+          c10::str(
+              "Failed to deregister segment [handle=",
+              handle,
+              "] on ncclComm_ ",
+              ncclComm_));
+      registSegmentHandles_.erase(ptr);
+    }
+    return ncclSuccess;
+#else
+    return ncclInvalidUsage;
+#endif
+  }
+
  protected:
   ncclComm_t ncclComm_;
   // Unique nccl_id for this communicator.
@@ -318,6 +379,10 @@ class NCCLComm {
   // Optional reason for communicator failure, provided by ProcessGroupNCCL for
   // better error messaging.
   c10::optional<std::string> commFailureReason_;
+#ifdef NCCL_HAS_COMM_REGISTER
+  // Stores handlers for tensors registered by NCCL
+  std::unordered_map<void*, void*> registSegmentHandles_;
+#endif
 };
 
 // Helper that automatically cleans up premul sums.
