@@ -157,16 +157,19 @@ struct TraceEntry {
       int64_t addr,
       size_t size,
       cudaStream_t stream,
+      int device,
       std::shared_ptr<GatheredContext> context = nullptr)
       : action_(action),
         addr_(addr),
         context_(std::move(context)),
         stream_(stream),
+        device_(device),
         size_(size) {}
   Action action_;
   int64_t addr_; // for OOM, this is the amount of free bytes reported by cuda
   std::shared_ptr<GatheredContext> context_;
   cudaStream_t stream_;
+  int device_;
   int64_t size_;
 };
 
@@ -198,6 +201,8 @@ using OutOfMemoryObserver = std::function<void(
     int64_t allocated,
     int64_t device_total,
     int64_t device_free)>;
+
+using AllocatorTraceTracker = std::function<void(TraceEntry)>;
 
 class CUDAAllocator : public Allocator {
  public:
@@ -246,6 +251,9 @@ class CUDAAllocator : public Allocator {
       size_t alloc_trace_max_entries,
       RecordContext when) = 0;
   virtual void attachOutOfMemoryObserver(OutOfMemoryObserver observer) = 0;
+  // We require AllocatorTraceTracker callback never include Pytorch call to
+  // avoid deadlock.
+  virtual void attachAllocatorTraceTracker(AllocatorTraceTracker tracker) = 0;
 
   virtual void enablePeerAccess(int dev, int dev_to_access) = 0;
 
@@ -388,6 +396,10 @@ inline bool checkPoolLiveAllocations(
 
 inline void attachOutOfMemoryObserver(OutOfMemoryObserver observer) {
   return get()->attachOutOfMemoryObserver(observer);
+}
+
+inline void attachAllocatorTraceTracker(AllocatorTraceTracker tracker) {
+  return get()->attachAllocatorTraceTracker(tracker);
 }
 
 inline void releasePool(int device, MempoolId_t mempool_id) {

@@ -884,6 +884,10 @@ class DeviceCachingAllocator {
   bool set_fraction = false;
 
   bool record_history = false;
+
+  // enable record trace when any trace tracker has been attached to the allocator
+  bool enable_trace_tracker_ = false;
+
   std::atomic<CreateContextFn> context_recorder_;
   size_t alloc_trace_next = 0;
   RecordContext record_context_ = RecordContext::NEVER;
@@ -911,6 +915,8 @@ class DeviceCachingAllocator {
 
   // XXX - maybe we should generalize and have multiple events
   std::vector<OutOfMemoryObserver> oom_observers_;
+
+  std::vector<AllocatorTraceTracker> trace_trackers_;
 
  public:
   DeviceCachingAllocator()
@@ -967,6 +973,11 @@ class DeviceCachingAllocator {
 
   void attachOutOfMemoryObserver(OutOfMemoryObserver observer) {
     oom_observers_.emplace_back(std::move(observer));
+  }
+
+  void attachAllocatorTraceTracker(AllocatorTraceTracker tracker) {
+    enable_trace_tracker_ = true;
+    trace_trackers_.emplace_back(tracker);
   }
 
   // Must be called outside of `mutex` or deadlocks are possible with Python
@@ -1053,12 +1064,13 @@ class DeviceCachingAllocator {
 
       std::string proc_info = reportProcessMemoryInfo(device);
 
-      if (record_history) {
+      if (record_history || enable_trace_tracker_) {
         record_trace(
             TraceEntry::OOM,
             device_free,
             params.size(),
             params.stream(),
+            params.device(),
             std::move(context));
       }
       stats.num_ooms += 1;
@@ -1202,13 +1214,14 @@ class DeviceCachingAllocator {
 
     block->allocated = true;
     block->requested_size = orig_size;
-    if (record_history) {
+    if (record_history || enable_trace_tracker_) {
       block->context_when_allocated = std::move(context);
       record_trace(
           TraceEntry::ALLOC,
           int64_t(block->ptr),
           orig_size,
           block->stream,
+          block->device,
           block->context_when_allocated);
     }
 
@@ -1260,12 +1273,13 @@ class DeviceCachingAllocator {
           stats.allocated_bytes[stat_type],
           -static_cast<std::int64_t>(block->size));
     });
-    if (record_history) {
+    if (record_history || enable_trace_tracker_) {
       record_trace(
           TraceEntry::FREE_REQUESTED,
           int64_t(block->ptr),
           block->requested_size,
           block->stream,
+          block->device,
           context ? context : block->context_when_allocated);
     }
     if (block->size >= CUDAAllocatorConfig::max_split_size())
@@ -1700,8 +1714,8 @@ class DeviceCachingAllocator {
           return a.address < b.address;
         });
 
-    if (record_history) {
-      record_trace(TraceEntry::SNAPSHOT, 0, total_active, nullptr, nullptr);
+    if (record_history || enable_trace_tracker_) {
+      record_trace(TraceEntry::SNAPSHOT, 0, total_active, nullptr, 0, nullptr);
     }
     return result;
   }
@@ -1979,12 +1993,13 @@ class DeviceCachingAllocator {
     for_each_selected_stat_type(stat_types, [&](size_t stat_type) {
       update_stat(stats.reserved_bytes[stat_type], mapped_range.size);
     });
-    if (record_history) {
+    if (record_history || enable_trace_tracker_) {
       record_trace(
           TraceEntry::SEGMENT_MAP,
           int64_t(mapped_range.ptr),
           mapped_range.size,
           to_map->stream,
+          to_map->device,
           ctx);
       if (!to_map->prev && !to_map->context_when_segment_allocated) {
         to_map->context_when_segment_allocated = ctx;
@@ -2034,12 +2049,13 @@ class DeviceCachingAllocator {
     TORCH_INTERNAL_ASSERT(
         !block->allocated && block->event_count == 0 &&
         block->stream_uses.empty());
-    if (record_history) {
+    if (record_history || enable_trace_tracker_) {
       record_trace(
           TraceEntry::FREE_COMPLETED,
           int64_t(block->ptr),
           block->requested_size,
           block->stream,
+          block->device,
           context ? context : block->context_when_allocated);
     }
     block->context_when_allocated = nullptr;
@@ -2400,12 +2416,13 @@ class DeviceCachingAllocator {
 
     // p.block came from new, not cudaMalloc. It should not be nullptr here.
     TORCH_INTERNAL_ASSERT(p.block != nullptr && p.block->ptr != nullptr);
-    if (record_history) {
+    if (record_history || enable_trace_tracker_) {
       record_trace(
           TraceEntry::SEGMENT_ALLOC,
           int64_t(p.block->ptr),
           p.block->size,
           p.stream(),
+          p.device(),
           ctx);
       p.block->context_when_segment_allocated = ctx;
     }
@@ -2506,6 +2523,15 @@ class DeviceCachingAllocator {
 
   void release_block(Block* block) {
     TORCH_INTERNAL_ASSERT(!block->expandable_segment_);
+    if (record_history || enable_trace_tracker_) {
+      record_trace(
+          TraceEntry::SEGMENT_FREE,
+          int64_t(block->ptr),
+          block->size,
+          block->stream,
+          block->device,
+          nullptr);
+    }
     C10_CUDA_CHECK(cudaFree((void*)block->ptr));
     total_allocated_memory -= block->size;
 
@@ -2526,14 +2552,6 @@ class DeviceCachingAllocator {
 
     if (block->size >= CUDAAllocatorConfig::max_split_size())
       update_stat(stats.oversize_segments, -1);
-    if (record_history) {
-      record_trace(
-          TraceEntry::SEGMENT_FREE,
-          int64_t(block->ptr),
-          block->size,
-          block->stream,
-          nullptr);
-    }
     pool->blocks.erase(block);
     delete block;
   }
@@ -2585,12 +2603,13 @@ class DeviceCachingAllocator {
     for_each_selected_stat_type(stat_types, [&](size_t stat_type) {
       update_stat(stats.reserved_bytes[stat_type], -unmapped.size);
     });
-    if (record_history) {
+    if (record_history || enable_trace_tracker_) {
       record_trace(
           TraceEntry::SEGMENT_UNMAP,
           int64_t(unmapped.ptr),
           unmapped.size,
           block->stream,
+          block->device,
           nullptr);
     }
   }
@@ -2738,13 +2757,26 @@ class DeviceCachingAllocator {
       int64_t addr,
       size_t size,
       cudaStream_t stream,
+      int device,
       std::shared_ptr<GatheredContext> context) {
     auto te = TraceEntry(
         action,
         addr,
         size,
         stream,
+        device,
         record_context_ >= RecordContext::ALLOC ? std::move(context) : nullptr);
+
+    // Callbacks should not include any Pytorch call
+    for (const auto& cb : trace_trackers_) {
+      cb(te);
+    }
+
+    // Do not record anything if we just enable trace tracker
+    if (!record_history) {
+      return;
+    }
+
     if (alloc_trace->size() < alloc_trace_max_entries_) {
       alloc_trace->emplace_back(te);
     } else {
@@ -2897,6 +2929,12 @@ class NativeCachingAllocator : public CUDAAllocator {
   void attachOutOfMemoryObserver(OutOfMemoryObserver observer) override {
     for (auto& allocator : device_allocator) {
       allocator->attachOutOfMemoryObserver(std::move(observer));
+    }
+  }
+
+  void attachAllocatorTraceTracker(AllocatorTraceTracker tracker) override {
+    for (auto& allocator : device_allocator) {
+      allocator->attachAllocatorTraceTracker(tracker);
     }
   }
 
