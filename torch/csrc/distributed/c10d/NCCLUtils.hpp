@@ -385,8 +385,9 @@ class NCCLComm {
 #endif
   }
 
- protected:
+ public:
   ncclComm_t ncclComm_;
+ protected:
   // Unique nccl_id for this communicator.
   ncclUniqueId ncclId_;
   bool aborted_;

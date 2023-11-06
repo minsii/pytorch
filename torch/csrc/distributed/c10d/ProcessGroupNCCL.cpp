@@ -1189,6 +1189,9 @@ void abortCommsFromMap(
     auto& ncclComms = it.second;
 
     for (const auto& ncclComm : ncclComms) {
+      LOG(INFO) << "[Rank " << rank << "] Destroyed comm " << ncclComm->getNcclId()
+                << " on CUDA device " << devName;
+
       ncclComm->ncclCommAbort(abortReason);
     }
     // Note that we don't remove the aborted communicators from the
@@ -1708,6 +1711,8 @@ std::vector<std::shared_ptr<NCCLComm>>& ProcessGroupNCCL::getNCCLComm(
 #else
     ncclComms[i] = NCCLComm::create(numRanks, rank, ncclID);
 #endif
+
+    LOG(INFO) << "Rank " << getRank() << " created NCCL comm " << ncclComms[i]->ncclComm_ << " on device " << deviceIndex << std::endl;
 
     // Creates the NCCL streams
     streamVal.push_back(

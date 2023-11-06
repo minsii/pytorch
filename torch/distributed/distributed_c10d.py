@@ -1439,6 +1439,11 @@ def destroy_process_group(group: Optional[ProcessGroup] = None):
     if pg.name().lower() == "nccl" and pg._has_hooks():
         pg._wait_for_pending_works()
 
+    rank = get_rank()
+    for pg, ranks in pg_group_ranks:
+        name = _world.pg_names[pg]
+        print(f"rank {rank} destroying PG with name {name} ranks {ranks} total {_world.group_count} groups")
+
     if group is None or group == GroupMember.WORLD:
         _update_default_pg(None)
         _world.pg_map.clear()
